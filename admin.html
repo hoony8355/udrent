@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UD Impact 자산 대여 관리자</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
+    .badge-green { @apply bg-green-100 text-green-800; }
+    .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
+    .badge-red { @apply bg-red-100 text-red-800; }
+    .btn { @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-semibold shadow-sm border border-gray-200 hover:bg-gray-50 disabled:opacity-50; }
+    .btn-primary { @apply bg-black text-white border-black hover:bg-gray-800; }
+    .input { @apply block w-full rounded-lg border-gray-300 focus:border-black focus:ring-black; }
+    .label { @apply block text-sm font-medium text-gray-700 mb-1; }
+    .card { @apply bg-white rounded-2xl shadow-sm border border-gray-200; }
+  </style>
+  <script type="module">
+    // ===== Firebase SDKs =====
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-auth.js";
+    import { getFirestore, collection, doc, getDoc, getDocs, query, where, orderBy, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-firestore.js";
+    import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-storage.js";
+
+    // ===== Firebase Config (udrent-927a2) =====
+    const firebaseConfig = {
+      apiKey: "AIzaSyANws_YQC_kEHrn_o2I1vx-OULeijIHw0w",
+      authDomain: "udrent-927a2.firebaseapp.com",
+      projectId: "udrent-927a2",
+      storageBucket: "udrent-927a2.firebasestorage.app",
+      messagingSenderId: "84954058245",
+      appId: "1:84954058245:web:3b4a52ccfc52a59fce166c",
+      measurementId: "G-E34CKZ1F4M"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+
+    // ===== State & Const =====
+    const STATE = { user: null, assets: [], selectedAsset: null };
+    const STATUS = { AVAILABLE: '대여가능', RENTED: '대여중', PENDING: '대여심사중' };
+    const ADMIN_WHITELIST = ["hoony@udimpact.ai", "hangsun@udimpact.ai"]; // 관리자만 접근
+
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+    const fmtDate = (s) => s ? new Date(s).toLocaleDateString('ko-KR') : '-';
+
+    function setBadge(el, status) {
+      el.className = 'badge ' + (status===STATUS.AVAILABLE? 'badge-green': status===STATUS.RENTED? 'badge-red' : 'badge-yellow');
+      el.textContent = status || STATUS.AVAILABLE;
+    }
+    function toast(msg) {
+      const t = document.createElement('div');
+      t.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-black text-white px-4 py-2 rounded-lg shadow z-50';
+      t.textContent = msg; document.body.appendChild(t); setTimeout(()=>t.remove(), 2000);
+    }
+
+    // ===== Auth =====
+    const provider = new GoogleAuthProvider();
+    async function signInGoogle() {
+      const { user } = await signInWithPopup(auth, provider);
+      if (!user.email.endsWith('@udimpact.ai')) { await signOut(auth); alert('사내 계정(@udimpact.ai)만 접근 가능합니다.'); }
+    }
+    async function doSignOut() { await signOut(auth); }
+
+    onAuthStateChanged(auth, async (user) => {
+      STATE.user = user;
+      if (!user || !user.email?.endsWith('@udimpact.ai')) { renderSignedOut(); return; }
+      if (!ADMIN_WHITELIST.includes(user.email)) { renderForbidden(user.email); return; }
+      $('#userEmail').textContent = user.email; $('#signedIn').classList.remove('hidden'); $('#signedOut').classList.add('hidden');
+      await refreshAll();
+    });
+
+    function renderSignedOut(){ $('#signedIn').classList.add('hidden'); $('#signedOut').classList.remove('hidden'); $('#guard').classList.add('hidden'); }
+    function renderForbidden(email){
+      $('#signedIn').classList.add('hidden'); $('#signedOut').classList.remove('hidden');
+      $('#guard').classList.remove('hidden'); $('#guardMsg').textContent = `관리자만 접근 가능합니다 (${email})`;
+    }
+
+    // ===== Firestore refs =====
+    const colAssets = collection(db, 'assets');
+    const colRequests = collection(db, 'rentalRequests');
+
+    async function refreshAll(){ await loadAssets(); renderAdminAssets(); renderPendingRequests(); }
+
+    async function loadAssets() {
+      const snap = await getDocs(query(colAssets, orderBy('name')));
+      STATE.assets = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    // ===== Asset CRUD / Status =====
+    async function createAsset(payload, file){
+      payload.createdAt = serverTimestamp();
+      payload.currentStatus = STATUS.AVAILABLE;
+      payload.currentHolder = null;
+      const ref = await addDoc(colAssets, payload);
+      const id = ref.id;
+      if (file) {
+        const r = sRef(storage, `assets/${id}/photo_${Date.now()}`);
+        await uploadBytes(r, file);
+        const url = await getDownloadURL(r);
+        await updateDoc(doc(db,'assets',id), { photoUrl: url });
+      }
+      return id;
+    }
+    async function deleteAsset(id){ await deleteDoc(doc(db,'assets',id)); }
+    async function setAssetStatus(assetId, status, holder=null){
+      const patch = { currentStatus: status };
+      patch.currentHolder = status===STATUS.RENTED ? holder : null;
+      await updateDoc(doc(db,'assets',assetId), patch);
+    }
+
+    // ===== Rental flow =====
+    async function approveRequest(r){
+      await updateDoc(doc(db,'rentalRequests', r.id), { status: 'approved' });
+      await setAssetStatus(r.assetId, STATUS.RENTED, { groupName: r.groupName, renterName: r.renterName, endDate: r.endDate });
+    }
+    async function declineRequest(r, comment=''){
+      await updateDoc(doc(db,'rentalRequests', r.id), { status: 'declined', adminComment: comment });
+      await normalizeAssetStatus(r.assetId);
+    }
+    async function returnRental(assetId){
+      const snap = await getDocs(query(colRequests, where('assetId','==',assetId), where('status','==','approved')));
+      const docs = snap.docs.sort((a,b)=> (b.data().createdAt?.seconds||0)-(a.data().createdAt?.seconds||0));
+      if (docs[0]) await updateDoc(docs[0].ref, { status: 'returned' });
+      await setAssetStatus(assetId, STATUS.AVAILABLE, null);
+    }
+    async function normalizeAssetStatus(assetId){
+      const pend = await getDocs(query(colRequests, where('assetId','==',assetId), where('status','==','pending')));
+      if (pend.size>0) { await setAssetStatus(assetId, STATUS.PENDING, null); return; }
+      const app = await getDocs(query(colRequests, where('assetId','==',assetId), where('status','==','approved')));
+      if (app.size>0){ const d=app.docs[0].data(); await setAssetStatus(assetId, STATUS.RENTED, { groupName:d.groupName, renterName:d.renterName, endDate:d.endDate }); }
+      else { await setAssetStatus(assetId, STATUS.AVAILABLE, null); }
+    }
+
+    // ===== Rendering =====
+    function renderAdminAssets(){
+      const tbody = $('#adminAssetTbody'); tbody.innerHTML = '';
+      STATE.assets.forEach(a=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="px-3 py-2 font-medium">${a.name||''}</td>
+          <td class="px-3 py-2 text-gray-600">${a.type||'-'}</td>
+          <td class="px-3 py-2"><span class="badge"></span></td>
+          <td class="px-3 py-2">${a.currentStatus===STATUS.RENTED && a.currentHolder? `${a.currentHolder.groupName} / ${a.currentHolder.renterName}`:'-'}</td>
+          <td class="px-3 py-2 flex gap-2 justify-end">
+            <button class="btn" data-action="return" ${a.currentStatus!==STATUS.RENTED? 'disabled':''}>반납처리</button>
+            <button class="btn" data-action="delete" ${a.currentStatus===STATUS.RENTED? 'disabled':''}>삭제</button>
+          </td>`;
+        setBadge(tr.querySelector('.badge'), a.currentStatus||STATUS.AVAILABLE);
+        tr.querySelector('[data-action="return"]').addEventListener('click', async ()=>{ await returnRental(a.id); toast('반납 처리 완료'); await refreshAll(); });
+        tr.querySelector('[data-action="delete"]').addEventListener('click', async ()=>{
+          if (confirm('자산을 삭제할까요? (대여중 자산은 삭제 불가)')){ await deleteAsset(a.id); toast('삭제 완료'); await refreshAll(); }
+        });
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function renderPendingRequests(){
+      const snap = await getDocs(query(colRequests, where('status','==','pending'), orderBy('createdAt')));
+      const tbody = $('#pendingTbody'); tbody.innerHTML = '';
+      snap.docs.forEach(d=>{
+        const r = { id:d.id, ...d.data() };
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="px-3 py-2">${r.assetName}</td>
+          <td class="px-3 py-2">${r.groupName} / ${r.renterName}</td>
+          <td class="px-3 py-2">${fmtDate(r.startDate)} ~ ${fmtDate(r.endDate)}</td>
+          <td class="px-3 py-2"><input class="input" placeholder="코멘트(선택)" data-field="comment" /></td>
+          <td class="px-3 py-2 flex gap-2 justify-end">
+            <button class="btn btn-primary" data-action="approve">승인</button>
+            <button class="btn" data-action="decline">거절</button>
+          </td>`;
+        tr.querySelector('[data-action="approve"]').addEventListener('click', async ()=>{ await approveRequest(r); toast('승인 완료'); await refreshAll(); });
+        tr.querySelector('[data-action="decline"]').addEventListener('click', async ()=>{ const c = tr.querySelector('[data-field="comment"]').value.trim(); await declineRequest(r, c); toast('거절 완료'); await refreshAll(); });
+        tbody.appendChild(tr);
+      });
+      $('#pendingCount').textContent = snap.size;
+    }
+
+    // ===== Event bindings =====
+    window.addEventListener('DOMContentLoaded', ()=>{
+      $('#signInBtn').addEventListener('click', signInGoogle);
+      $('#signOutBtn').addEventListener('click', doSignOut);
+      $('#assetCreateBtn').addEventListener('click', onCreateAsset);
+      $('#seedBtn').addEventListener('click', seedExamples);
+    });
+
+    async function onCreateAsset(){
+      const name = $('#c_name').value.trim();
+      const desc = $('#c_desc').value.trim();
+      const type = $('#c_type').value.trim();
+      const category = $('#c_category').value.trim();
+      const serialNumber = $('#c_serial').value.trim();
+      const location = $('#c_loc').value.trim();
+      const purchaseDate = $('#c_purchased').value;
+      const purchasePrice = parseInt($('#c_price').value || '');
+      const manager = $('#c_manager').value.trim();
+      const note = $('#c_note').value.trim();
+      const file = $('#c_photo').files[0];
+
+      if (!name || !desc) { toast('자산명/설명은 필수입니다'); return; }
+      if (!file) { toast('자산 사진 1장을 업로드해주세요'); return; }
+
+      await createAsset({ name, description: desc, type, category, serialNumber, location, purchaseDate, purchasePrice: isNaN(purchasePrice)? null: purchasePrice, manager, note, photoUrl: '' }, file);
+
+      // reset
+      ['c_name','c_desc','c_type','c_category','c_serial','c_loc','c_purchased','c_price','c_manager','c_note'].forEach(id=> $('#'+id).value='');
+      $('#c_photo').value='';
+
+      toast('자산 등록 완료');
+      await refreshAll();
+    }
+
+    // ===== Seed examples =====
+    async function seedExamples(){
+      const exs = [
+        { name:'맥북 프로 14" (M3)', description:'개발용 노트북', type:'전자기기', category:'노트북', serialNumber:'MBP14-UD-001', location:'서울 본사 IT보관실', manager:'김광훈', note:'충전기 포함', photo:"https://placehold.co/640x360?text=MacBook" },
+        { name:'소니 A7C', description:'행사 촬영용 카메라', type:'전자기기', category:'카메라', serialNumber:'A7C-UD-002', location:'서울 본사 장비실', manager:'이소연', note:'SD 128GB 포함', photo:"https://placehold.co/640x360?text=Sony+A7C" },
+        { name:'빔프로젝터', description:'회의실 프리젠테이션용', type:'비품', category:'프로젝터', serialNumber:'PJ-UD-003', location:'부산 지사', manager:'하주은', note:'HDMI 케이블 동봉', photo:"https://placehold.co/640x360?text=Projector" },
+      ];
+      for (const ex of exs){
+        const id = await createAsset({ name: ex.name, description: ex.description, type: ex.type, category: ex.category, serialNumber: ex.serialNumber, location: ex.location, manager: ex.manager, note: ex.note, photoUrl: '' });
+        await updateDoc(doc(db,'assets',id), { photoUrl: ex.photo });
+      }
+      toast('예시 자산 3건 생성 완료');
+      await refreshAll();
+    }
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-40">
+    <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+      <h1 class="text-lg font-semibold">UD Impact 자산 대여 관리자</h1>
+      <div class="flex items-center gap-2">
+        <div id="signedOut" class="ml-2">
+          <button id="signInBtn" class="btn btn-primary">Google 로그인</button>
+        </div>
+        <div id="signedIn" class="hidden items-center gap-2 ml-2">
+          <span id="userEmail" class="text-sm text-gray-600"></span>
+          <button id="signOutBtn" class="btn">로그아웃</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-6">
+    <!-- Guard for non-admins -->
+    <div id="guard" class="hidden card p-4 mb-6">
+      <p class="text-sm text-red-600" id="guardMsg"></p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <!-- 자산 등록 -->
+      <section class="card p-4">
+        <h2 class="text-base font-semibold mb-3">자산 등록</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label class="label">자산명 *</label>
+            <input id="c_name" class="input" placeholder="예: 맥북 프로 14" />
+          </div>
+          <div class="col-span-2">
+            <label class="label">자산설명 *</label>
+            <textarea id="c_desc" class="input" placeholder="간단 설명"></textarea>
+          </div>
+          <div>
+            <label class="label">자산종류(대분류)</label>
+            <input id="c_type" class="input" placeholder="전자기기/비품 등" />
+          </div>
+          <div>
+            <label class="label">자산카테고리(임의)</label>
+            <input id="c_category" class="input" placeholder="노트북/카메라 등" />
+          </div>
+          <div>
+            <label class="label">시리얼/자산번호</label>
+            <input id="c_serial" class="input" />
+          </div>
+          <div>
+            <label class="label">보관 위치</label>
+            <input id="c_loc" class="input" />
+          </div>
+          <div>
+            <label class="label">구매일</label>
+            <input id="c_purchased" type="date" class="input" />
+          </div>
+          <div>
+            <label class="label">구매금액(원)</label>
+            <input id="c_price" type="number" class="input" />
+          </div>
+          <div>
+            <label class="label">담당자</label>
+            <input id="c_manager" class="input" />
+          </div>
+          <div class="col-span-2">
+            <label class="label">비고</label>
+            <textarea id="c_note" class="input"></textarea>
+          </div>
+          <div class="col-span-2">
+            <label class="label">자산 사진(1장) *</label>
+            <input id="c_photo" type="file" accept="image/*" class="input" />
+          </div>
+          <div class="col-span-2 flex gap-2">
+            <button id="assetCreateBtn" class="btn btn-primary">등록</button>
+            <button id="seedBtn" class="btn">예시 3개 생성</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 대기중 신청 -->
+      <section class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold">대여 신청 승인(대기중)</h2>
+          <span class="text-sm text-gray-500">총 <span id="pendingCount">0</span>건</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+              <tr>
+                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">자산</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">그룹/대여자</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">기간</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">코멘트</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody id="pendingTbody" class="divide-y divide-gray-100 bg-white"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- 자산 목록 -->
+    <section class="card p-4 mt-6">
+      <h2 class="text-base font-semibold mb-3">자산 목록</h2>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">자산명</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">종류</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">상태</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">비고</th>
+              <th class="px-3 py-2 text-right text-xs font-semibold text-gray-500">관리</th>
+            </tr>
+          </thead>
+          <tbody id="adminAssetTbody" class="divide-y divide-gray-100 bg-white"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="text-center py-8 text-xs text-gray-400">© UD Impact</footer>
+</body>
+</html>
