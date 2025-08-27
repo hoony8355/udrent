@@ -6,26 +6,35 @@
   <title>UD Impact 자산 대여 (직원용)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    :root { --modal-z: 70; --backdrop-z: 60; }
+    :root { --modal-z: 80; --backdrop-z: 70; }
+    /* Buttons & inputs */
     .btn { @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-semibold shadow-sm border border-gray-200 hover:bg-gray-50 disabled:opacity-50; }
     .btn-primary { @apply bg-black text-white border-black hover:bg-gray-800; }
     .input { @apply block w-full rounded-lg border-gray-300 focus:border-black focus:ring-black; }
-    .label { @apply block text-sm font-medium text-gray-700 mb-1; }
-    .card { @apply bg-white rounded-2xl shadow-sm border border-gray-200; }
+    .label { @apply block text-sm font-medium text-gray-900 mb-1; } /* 더 진하게 */
+    .card { @apply bg-white rounded-2xl shadow-md border border-gray-200; }
+
+    /* Status chips/badges */
     .chip { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium border; }
-    .chip-green { @apply bg-green-50 text-green-700 border-green-200; }
-    .chip-yellow { @apply bg-yellow-50 text-yellow-800 border-yellow-200; }
+    .chip-green { @apply bg-green-50 text-green-800 border-green-200; }
+    .chip-yellow { @apply bg-yellow-50 text-yellow-900 border-yellow-200; }
     .chip-red { @apply bg-red-50 text-red-800 border-red-200; }
-    .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
+    .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold; }
     .badge-green { @apply bg-green-100 text-green-800; }
-    .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
+    .badge-yellow { @apply bg-yellow-100 text-yellow-900; }
     .badge-red { @apply bg-red-100 text-red-800; }
-    /* Backdrop to fully dim background */
-    .backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(3px) saturate(120%); z-index: var(--backdrop-z); }
+
+    /* Backdrop & modal (가독성 강화) */
+    .backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.78); backdrop-filter: blur(4px) saturate(115%); z-index: var(--backdrop-z); }
     .modal { position: fixed; inset: 0; z-index: var(--modal-z); display: grid; place-items: center; padding: 1rem; }
-    .modal > .panel { @apply card w-full max-w-2xl overflow-hidden; animation: pop 140ms ease-out; }
-    @keyframes pop { from { transform: translateY(8px) scale(.98); opacity:.0 } to { transform: translateY(0) scale(1); opacity:1 } }
+    .modal > .panel { @apply w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-gray-200; animation: pop 140ms ease-out; }
+    @keyframes pop { from { transform: translateY(8px) scale(.98); opacity: .0 } to { transform: translateY(0) scale(1); opacity: 1 } }
     .no-scroll { overflow: hidden; }
+
+    /* 상세 라벨 가독성 */
+    .kv { @apply space-y-1 text-[15px]; }
+    .kv .k { @apply text-gray-900 font-medium; }  /* 어두운 라벨 */
+    .kv .v { @apply text-gray-800; }
   </style>
 
   <!-- Firebase SDKs -->
@@ -34,7 +43,6 @@
     import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-auth.js";
     import { getFirestore, collection, doc, getDocs, query, where, orderBy, addDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.8.1/firebase-firestore.js";
 
-    // ===== Firebase Config (udrent-927a2) =====
     const firebaseConfig = {
       apiKey: "AIzaSyANws_YQC_kEHrn_o2I1vx-OULeijIHw0w",
       authDomain: "udrent-927a2.firebaseapp.com",
@@ -49,7 +57,6 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    // ===== State =====
     const STATUS = { AVAILABLE: '대여가능', RENTED: '대여중', PENDING: '대여심사중' };
     const STATE = { user:null, assets:[], filters:{status:'', type:'', q:''}, selected:null };
 
@@ -62,153 +69,93 @@
       el.className = `badge ${map[status]||'badge-green'}`; el.textContent = status;
     }
 
-    // ===== Auth =====
+    // Auth
     const provider = new GoogleAuthProvider();
-    async function signInGoogle(){
-      const {user} = await signInWithPopup(auth, provider);
-      if(!user.email.endsWith('@udimpact.ai')){ await signOut(auth); alert('사내 계정(@udimpact.ai)만 접근 가능합니다.'); }
-    }
+    async function signInGoogle(){ const {user}=await signInWithPopup(auth,provider); if(!user.email.endsWith('@udimpact.ai')){ await signOut(auth); alert('사내 계정(@udimpact.ai)만 접근 가능합니다.'); } }
     async function doSignOut(){ await signOut(auth); }
 
     onAuthStateChanged(auth, async (user)=>{
-      STATE.user = user;
+      STATE.user=user;
       if(user && user.email?.endsWith('@udimpact.ai')){
-        $('#signedIn').classList.remove('hidden');
-        $('#signedOut').classList.add('hidden');
-        $('#userEmail').textContent = user.email;
-        await loadAssets();
-        renderAssets();
-      } else {
-        $('#signedIn').classList.add('hidden');
-        $('#signedOut').classList.remove('hidden');
-        $('#userEmail').textContent='';
-        $('#assetTbody').innerHTML='';
-      }
+        $('#signedIn').classList.remove('hidden'); $('#signedOut').classList.add('hidden'); $('#userEmail').textContent=user.email; await loadAssets(); renderAssets();
+      } else { $('#signedIn').classList.add('hidden'); $('#signedOut').classList.remove('hidden'); $('#assetTbody').innerHTML=''; }
     });
 
-    // ===== Firestore =====
+    // Firestore
     const colAssets = collection(db,'assets');
     const colRequests = collection(db,'rentalRequests');
+    async function loadAssets(){ const snap=await getDocs(query(colAssets, orderBy('name'))); STATE.assets=snap.docs.map(d=>({id:d.id, ...d.data()})); }
 
-    async function loadAssets(){
-      const snap = await getDocs(query(colAssets, orderBy('name')));
-      STATE.assets = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    }
-
-    async function submitRentalRequest(asset, {groupName, renterName, startDate, endDate}){
-      // 겹치는 기간 검사: approved만 고려
+    async function submitRentalRequest(asset,{groupName,renterName,startDate,endDate}){
       const qs = query(colRequests, where('assetId','==',asset.id), where('status','==','approved'));
       const snap = await getDocs(qs);
-      const s = new Date(startDate).getTime();
-      const e = new Date(endDate).getTime();
+      const s=new Date(startDate).getTime(), e=new Date(endDate).getTime();
       const overlaps = snap.docs.some(d=>{ const r=d.data(); const s2=new Date(r.startDate).getTime(); const e2=new Date(r.endDate).getTime(); return !(e < s2 || e2 < s); });
       if(overlaps) throw new Error('해당 기간에는 이미 승인된 대여가 있어 신청할 수 없습니다.');
-
-      await addDoc(colRequests, { assetId: asset.id, assetName: asset.name, groupName, renterName, startDate, endDate, status:'pending', adminComment:'', createdBy: STATE.user.email, createdAt: serverTimestamp() });
-      await updateDoc(doc(db,'assets',asset.id), { currentStatus: STATUS.PENDING, currentHolder: null });
+      await addDoc(colRequests,{ assetId:asset.id, assetName:asset.name, groupName, renterName, startDate, endDate, status:'pending', adminComment:'', createdBy:STATE.user.email, createdAt:serverTimestamp() });
+      await updateDoc(doc(db,'assets',asset.id),{ currentStatus:STATUS.PENDING, currentHolder:null });
     }
 
-    // ===== Rendering =====
-    function assetMatches(a){
-      const f=STATE.filters; if(f.status && a.currentStatus!==f.status) return false;
-      if(f.type && (a.type||'')!==f.type) return false;
-      if(f.q){ const t=`${a.name||''} ${a.description||''}`.toLowerCase(); if(!t.includes(f.q.toLowerCase())) return false; }
-      return true;
-    }
+    // Render
+    function assetMatches(a){ const f=STATE.filters; if(f.status && a.currentStatus!==f.status) return false; if(f.type && (a.type||'')!==f.type) return false; if(f.q){ const t=`${a.name||''} ${a.description||''}`.toLowerCase(); if(!t.includes(f.q.toLowerCase())) return false; } return true; }
 
     function renderAssets(){
-      const tbody = $('#assetTbody'); tbody.innerHTML='';
-      const list = STATE.assets.filter(assetMatches);
+      const tbody=$('#assetTbody'); tbody.innerHTML='';
+      const list=STATE.assets.filter(assetMatches);
       list.forEach(a=>{
         const tr=document.createElement('tr'); tr.className='hover:bg-gray-50';
-        tr.innerHTML = `
+        tr.innerHTML=`
           <td class='px-3 py-2 font-medium text-gray-900'>${a.name||''}</td>
-          <td class='px-3 py-2 text-gray-600'>${a.description||''}</td>
+          <td class='px-3 py-2 text-gray-800'>${a.description||''}</td>
           <td class='px-3 py-2'><span class='badge'></span></td>
-          <td class='px-3 py-2 text-gray-600'>${a.currentStatus===STATUS.RENTED && a.currentHolder? `${a.currentHolder.groupName} / ${a.currentHolder.renterName}`:'-'}</td>`;
-        tr.addEventListener('click', ()=> openDetail(a));
+          <td class='px-3 py-2 text-gray-700'>${a.currentStatus==='대여중' && a.currentHolder? `${a.currentHolder.groupName} / ${a.currentHolder.renterName}`:'-'}</td>`;
+        tr.addEventListener('click',()=>openDetail(a));
         tbody.appendChild(tr);
         setBadge(tr.querySelector('.badge'), a.currentStatus||STATUS.AVAILABLE);
       });
-      $('#assetCount').textContent = list.length;
+      $('#assetCount').textContent=list.length;
     }
 
-    // ===== Modal helpers =====
-    function openModal(id){
-      closeAllModals();
-      document.body.classList.add('no-scroll');
-      $('#backdrop').classList.remove('hidden');
-      $(id).classList.remove('hidden');
-    }
-    function closeAllModals(){
-      document.body.classList.remove('no-scroll');
-      $('#backdrop').classList.add('hidden');
-      ['#detailModal','#applyModal'].forEach(sel=> $(sel).classList.add('hidden'));
-    }
+    // Modal helpers
+    function openModal(id){ closeAllModals(); document.body.classList.add('no-scroll'); $('#backdrop').classList.remove('hidden'); $(id).classList.remove('hidden'); }
+    function closeAllModals(){ document.body.classList.remove('no-scroll'); $('#backdrop').classList.add('hidden'); ['#detailModal','#applyModal'].forEach(sel=>$(sel).classList.add('hidden')); }
 
-    // ===== Detail / Apply flows =====
     function openDetail(asset){
-      STATE.selected = asset;
-      $('#d_name').textContent = asset.name||'';
-      $('#d_desc').textContent = asset.description||'';
-      $('#d_type').textContent = asset.type||'-';
-      $('#d_cat').textContent = asset.category||'-';
-      $('#d_serial').textContent = asset.serialNumber||'-';
-      $('#d_loc').textContent = asset.location||'-';
-      $('#d_manager').textContent = asset.manager||'-';
-      $('#d_purchase').textContent = asset.purchaseDate? fmtDate(asset.purchaseDate): '-';
-      $('#d_price').textContent = asset.purchasePrice? `${asset.purchasePrice.toLocaleString()}원` : '-';
-      const st = $('#d_status'); setBadge(st, asset.currentStatus||STATUS.AVAILABLE);
-      $('#d_remark').textContent = (asset.currentStatus===STATUS.RENTED && asset.currentHolder)? `${asset.currentHolder.groupName} / ${asset.currentHolder.renterName} (~ ${fmtDate(asset.currentHolder.endDate)})` : '-';
-      // ✅ 이미지 바인딩(없으면 플레이스홀더)
-      const img = $('#d_photo');
-      img.src = asset.photoUrl || 'https://placehold.co/640x360?text=Asset';
-      img.alt = asset.name || 'asset photo';
-      // 버튼 상태
-      $('#applyOpen').disabled = asset.currentStatus !== STATUS.AVAILABLE;
+      STATE.selected=asset;
+      $('#d_name').textContent=asset.name||'';
+      $('#d_desc').textContent=asset.description||'';
+      $('#d_type').textContent=asset.type||'-';
+      $('#d_cat').textContent=asset.category||'-';
+      $('#d_serial').textContent=asset.serialNumber||'-';
+      $('#d_loc').textContent=asset.location||'-';
+      $('#d_manager').textContent=asset.manager||'-';
+      $('#d_purchase').textContent=asset.purchaseDate? fmtDate(asset.purchaseDate): '-';
+      $('#d_price').textContent=asset.purchasePrice? `${asset.purchasePrice.toLocaleString()}원`:'-';
+      setBadge($('#d_status'), asset.currentStatus||STATUS.AVAILABLE);
+      $('#d_remark').textContent=(asset.currentStatus==='대여중'&&asset.currentHolder)? `${asset.currentHolder.groupName} / ${asset.currentHolder.renterName} (~ ${fmtDate(asset.currentHolder.endDate)})`:'-';
+      const img=$('#d_photo'); img.src=asset.photoUrl||'https://placehold.co/640x360?text=Asset'; img.alt=asset.name||'asset photo';
+      $('#applyOpen').disabled=asset.currentStatus!==STATUS.AVAILABLE;
       openModal('#detailModal');
     }
 
     async function onApplySubmit(){
-      const a = STATE.selected; if(!a) return;
-      const groupName = $('#apply_group').value.trim();
-      const renterName = $('#apply_renter').value.trim();
-      const startDate = $('#apply_start').value; const endDate = $('#apply_end').value;
-      if(!groupName || !renterName || !startDate || !endDate){ alert('필수 항목을 모두 입력해주세요.'); return; }
+      const a=STATE.selected; if(!a) return; const groupName=$('#apply_group').value.trim(); const renterName=$('#apply_renter').value.trim(); const startDate=$('#apply_start').value; const endDate=$('#apply_end').value;
+      if(!groupName||!renterName||!startDate||!endDate){ alert('필수 항목을 모두 입력해주세요.'); return; }
       if(new Date(endDate) < new Date(startDate)){ alert('종료일이 시작일보다 빠를 수 없습니다.'); return; }
-      try{
-        await submitRentalRequest(a, { groupName, renterName, startDate, endDate });
-        closeAllModals(); await loadAssets(); renderAssets();
-        toast('대여 신청이 접수되었습니다.');
-      }catch(e){ alert(e.message); }
+      try{ await submitRentalRequest(a,{groupName,renterName,startDate,endDate}); closeAllModals(); await loadAssets(); renderAssets(); toast('대여 신청이 접수되었습니다.'); } catch(e){ alert(e.message); }
     }
 
-    function toast(msg){ const t=document.createElement('div'); t.className='fixed bottom-6 left-1/2 -translate-x-1/2 bg-black text-white px-4 py-2 rounded-lg shadow z-[80]'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(), 2200); }
+    function toast(msg){ const t=document.createElement('div'); t.className='fixed bottom-6 left-1/2 -translate-x-1/2 bg-black text-white px-4 py-2 rounded-lg shadow z-[90]'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2200); }
 
-    // ===== Events =====
-    window.addEventListener('DOMContentLoaded', ()=>{
-      // Auth buttons
-      $('#signInBtn').addEventListener('click', signInGoogle);
-      $('#signOutBtn').addEventListener('click', doSignOut);
-
-      // Filters
-      $('#filterStatus').addEventListener('change', e=>{ STATE.filters.status = e.target.value; renderAssets(); });
-      $('#filterType').addEventListener('change', e=>{ STATE.filters.type = e.target.value; renderAssets(); });
-      $('#searchQ').addEventListener('input', e=>{ STATE.filters.q = e.target.value; renderAssets(); });
-
-      // Modal close handlers
-      $$('#closeDetail, #closeApply').forEach(btn=> btn.addEventListener('click', closeAllModals));
-      $('#backdrop').addEventListener('click', (e)=>{ if(e.target===e.currentTarget) closeAllModals(); });
-
-      // Open Apply from Detail
-      $('#applyOpen').addEventListener('click', ()=>{
-        const a = STATE.selected; if(!a) return;
-        $('#apply_assetName').textContent = a.name;
-        $('#apply_group').value='';
-        $('#apply_renter').value = STATE.user?.displayName || '';
-        $('#apply_start').value=''; $('#apply_end').value='';
-        openModal('#applyModal');
-      });
+    // Events
+    window.addEventListener('DOMContentLoaded',()=>{
+      $('#signInBtn').addEventListener('click',signInGoogle); $('#signOutBtn').addEventListener('click',doSignOut);
+      $('#filterStatus').addEventListener('change',e=>{ STATE.filters.status=e.target.value; renderAssets(); });
+      $('#filterType').addEventListener('change',e=>{ STATE.filters.type=e.target.value; renderAssets(); });
+      $('#searchQ').addEventListener('input',e=>{ STATE.filters.q=e.target.value; renderAssets(); });
+      $$('#closeDetail, #closeApply').forEach(b=>b.addEventListener('click',closeAllModals));
+      $('#backdrop').addEventListener('click',(e)=>{ if(e.target===e.currentTarget) closeAllModals(); });
+      $('#applyOpen').addEventListener('click',()=>{ const a=STATE.selected; if(!a) return; $('#apply_assetName').textContent=a.name; $('#apply_group').value=''; $('#apply_renter').value=STATE.user?.displayName||''; $('#apply_start').value=''; $('#apply_end').value=''; openModal('#applyModal'); });
       $('#applySubmit').addEventListener('click', onApplySubmit);
     });
   </script>
@@ -226,7 +173,7 @@
           <button id="signInBtn" class="btn btn-primary">Google 로그인</button>
         </div>
         <div id="signedIn" class="hidden items-center gap-2 ml-2">
-          <span id="userEmail" class="text-sm text-gray-600"></span>
+          <span id="userEmail" class="text-sm text-gray-700"></span>
           <button id="signOutBtn" class="btn">로그아웃</button>
         </div>
       </div>
@@ -236,7 +183,7 @@
   <main class="max-w-6xl mx-auto px-4 py-6 space-y-4">
     <!-- Legend -->
     <section class="flex flex-wrap gap-2 items-center text-sm">
-      <span class="text-gray-600">상태 표시:</span>
+      <span class="text-gray-700">상태 표시:</span>
       <span class="chip chip-green">대여가능</span>
       <span class="chip chip-yellow">대여심사중</span>
       <span class="chip chip-red">대여중</span>
@@ -265,7 +212,7 @@
         <label class="label">검색 (자산명/설명)</label>
         <input id="searchQ" class="input" placeholder="예: 맥북, 카메라" />
       </div>
-      <div class="ml-auto text-sm text-gray-500">총 <span id="assetCount">0</span>건</div>
+      <div class="ml-auto text-sm text-gray-600">총 <span id="assetCount">0</span>건</div>
     </section>
 
     <!-- List -->
@@ -274,10 +221,10 @@
         <table class="min-w-full divide-y divide-gray-200">
           <thead class="bg-gray-50">
             <tr>
-              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">자산명</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">설명</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">상태</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-500">비고(대여자/그룹)</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700">자산명</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700">설명</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700">상태</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700">비고(대여자/그룹)</th>
             </tr>
           </thead>
           <tbody id="assetTbody" class="divide-y divide-gray-100 bg-white"></tbody>
@@ -292,24 +239,24 @@
   <!-- Detail Modal -->
   <section id="detailModal" class="modal hidden" aria-modal="true" role="dialog" aria-labelledby="detailTitle">
     <div class="panel">
-      <div class="flex items-center justify-between px-4 py-3 border-b">
-        <h3 id="detailTitle" class="font-semibold">자산 상세</h3>
+      <div class="flex items-center justify-between px-4 py-3 border-b bg-white/90 backdrop-blur-sm">
+        <h3 id="detailTitle" class="font-semibold text-gray-900">자산 상세</h3>
         <button id="closeDetail" class="btn" aria-label="닫기">닫기</button>
       </div>
       <div class="grid md:grid-cols-2 gap-4 p-4">
         <img id="d_photo" alt="asset" class="w-full h-56 object-cover rounded-xl border" src="https://placehold.co/640x360?text=Asset" />
-        <div class="space-y-1 text-sm">
-          <div><span class="text-gray-500">자산명</span> : <span id="d_name" class="font-medium"></span></div>
-          <div><span class="text-gray-500">설명</span> : <span id="d_desc"></span></div>
-          <div><span class="text-gray-500">종류</span> : <span id="d_type"></span></div>
-          <div><span class="text-gray-500">카테고리</span> : <span id="d_cat"></span></div>
-          <div><span class="text-gray-500">시리얼</span> : <span id="d_serial"></span></div>
-          <div><span class="text-gray-500">보관 위치</span> : <span id="d_loc"></span></div>
-          <div><span class="text-gray-500">담당자</span> : <span id="d_manager"></span></div>
-          <div><span class="text-gray-500">구매일</span> : <span id="d_purchase"></span></div>
-          <div><span class="text-gray-500">구매가</span> : <span id="d_price"></span></div>
-          <div><span class="text-gray-500">상태</span> : <span id="d_status" class="badge"></span></div>
-          <div><span class="text-gray-500">비고</span> : <span id="d_remark">-</span></div>
+        <div class="kv">
+          <div><span class="k">자산명</span> : <span id="d_name" class="v"></span></div>
+          <div><span class="k">설명</span> : <span id="d_desc" class="v"></span></div>
+          <div><span class="k">종류</span> : <span id="d_type" class="v"></span></div>
+          <div><span class="k">카테고리</span> : <span id="d_cat" class="v"></span></div>
+          <div><span class="k">시리얼</span> : <span id="d_serial" class="v"></span></div>
+          <div><span class="k">보관 위치</span> : <span id="d_loc" class="v"></span></div>
+          <div><span class="k">담당자</span> : <span id="d_manager" class="v"></span></div>
+          <div><span class="k">구매일</span> : <span id="d_purchase" class="v"></span></div>
+          <div><span class="k">구매가</span> : <span id="d_price" class="v"></span></div>
+          <div><span class="k">상태</span> : <span id="d_status" class="badge"></span></div>
+          <div><span class="k">비고</span> : <span id="d_remark" class="v">-</span></div>
         </div>
       </div>
       <div class="px-4 pb-4">
@@ -321,8 +268,8 @@
   <!-- Apply Modal -->
   <section id="applyModal" class="modal hidden" aria-modal="true" role="dialog" aria-labelledby="applyTitle">
     <div class="panel max-w-md">
-      <div class="flex items-center justify-between px-4 py-3 border-b">
-        <h3 id="applyTitle" class="font-semibold">대여 신청: <span id="apply_assetName"></span></h3>
+      <div class="flex items-center justify-between px-4 py-3 border-b bg-white/90 backdrop-blur-sm">
+        <h3 id="applyTitle" class="font-semibold text-gray-900">대여 신청: <span id="apply_assetName"></span></h3>
         <button id="closeApply" class="btn" aria-label="닫기">닫기</button>
       </div>
       <div class="p-4 space-y-3">
