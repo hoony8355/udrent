@@ -6,7 +6,7 @@
   <title>UD Impact 자산 대여 (직원용)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    :root { --modal-z: 60; --backdrop-z: 50; }
+    :root { --modal-z: 70; --backdrop-z: 60; }
     .btn { @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-semibold shadow-sm border border-gray-200 hover:bg-gray-50 disabled:opacity-50; }
     .btn-primary { @apply bg-black text-white border-black hover:bg-gray-800; }
     .input { @apply block w-full rounded-lg border-gray-300 focus:border-black focus:ring-black; }
@@ -20,10 +20,11 @@
     .badge-green { @apply bg-green-100 text-green-800; }
     .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
     .badge-red { @apply bg-red-100 text-red-800; }
-    .backdrop { position: fixed; inset: 0; background: rgb(2 6 23 / 0.45); backdrop-filter: saturate(120%) blur(2px); z-index: var(--backdrop-z); }
+    /* Backdrop to fully dim background */
+    .backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(3px) saturate(120%); z-index: var(--backdrop-z); }
     .modal { position: fixed; inset: 0; z-index: var(--modal-z); display: grid; place-items: center; padding: 1rem; }
-    .modal > .panel { @apply card w-full max-w-2xl overflow-hidden; animation: pop 120ms ease-out; }
-    @keyframes pop { from { transform: translateY(8px) scale(.98); opacity: .0 } to { transform: translateY(0) scale(1); opacity: 1 } }
+    .modal > .panel { @apply card w-full max-w-2xl overflow-hidden; animation: pop 140ms ease-out; }
+    @keyframes pop { from { transform: translateY(8px) scale(.98); opacity:.0 } to { transform: translateY(0) scale(1); opacity:1 } }
     .no-scroll { overflow: hidden; }
   </style>
 
@@ -132,7 +133,7 @@
       $('#assetCount').textContent = list.length;
     }
 
-    // ===== Modal helpers (single-open, no background scroll) =====
+    // ===== Modal helpers =====
     function openModal(id){
       closeAllModals();
       document.body.classList.add('no-scroll');
@@ -159,6 +160,11 @@
       $('#d_price').textContent = asset.purchasePrice? `${asset.purchasePrice.toLocaleString()}원` : '-';
       const st = $('#d_status'); setBadge(st, asset.currentStatus||STATUS.AVAILABLE);
       $('#d_remark').textContent = (asset.currentStatus===STATUS.RENTED && asset.currentHolder)? `${asset.currentHolder.groupName} / ${asset.currentHolder.renterName} (~ ${fmtDate(asset.currentHolder.endDate)})` : '-';
+      // ✅ 이미지 바인딩(없으면 플레이스홀더)
+      const img = $('#d_photo');
+      img.src = asset.photoUrl || 'https://placehold.co/640x360?text=Asset';
+      img.alt = asset.name || 'asset photo';
+      // 버튼 상태
       $('#applyOpen').disabled = asset.currentStatus !== STATUS.AVAILABLE;
       openModal('#detailModal');
     }
@@ -190,18 +196,17 @@
       $('#filterType').addEventListener('change', e=>{ STATE.filters.type = e.target.value; renderAssets(); });
       $('#searchQ').addEventListener('input', e=>{ STATE.filters.q = e.target.value; renderAssets(); });
 
-      // Modal close handlers (X, Cancel, backdrop click)
+      // Modal close handlers
       $$('#closeDetail, #closeApply').forEach(btn=> btn.addEventListener('click', closeAllModals));
       $('#backdrop').addEventListener('click', (e)=>{ if(e.target===e.currentTarget) closeAllModals(); });
 
-      // Open Apply from Detail (switch cleanly)
+      // Open Apply from Detail
       $('#applyOpen').addEventListener('click', ()=>{
         const a = STATE.selected; if(!a) return;
         $('#apply_assetName').textContent = a.name;
         $('#apply_group').value='';
         $('#apply_renter').value = STATE.user?.displayName || '';
         $('#apply_start').value=''; $('#apply_end').value='';
-        // open apply (detail automatically hidden by openModal)
         openModal('#applyModal');
       });
       $('#applySubmit').addEventListener('click', onApplySubmit);
